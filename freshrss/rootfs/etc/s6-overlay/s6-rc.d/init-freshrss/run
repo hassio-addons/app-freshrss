@@ -1,0 +1,136 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community App: FreshRSS
+# Sets up FreshRSS before the server starts
+# ==============================================================================
+declare auth_type
+declare password
+declare password_hash
+declare timezone
+declare username
+
+readonly FRESHRSS_DIR="/var/www/freshrss"
+readonly DATA_DIR="/data/freshrss"
+readonly PASSWORD_STAMP="${DATA_DIR}/.password"
+
+username=$(bashio::config 'username' 'admin')
+
+# Ingress runs behind Home Assistant, which has established who is asking long
+# before a request gets here, so FreshRSS is told to take that word for it.
+# Without it, FreshRSS asks for a login of its own.
+if bashio::config.true 'ingress_auto_login'; then
+    auth_type='http_auth'
+else
+    auth_type='form'
+fi
+
+password=""
+if bashio::config.has_value 'password'; then
+    password=$(bashio::config 'password')
+fi
+
+if [[ "${auth_type}" = "form" ]] && bashio::var.is_empty "${password}"; then
+    bashio::exit.nok \
+        "FreshRSS has been set to ask for a login of its own, but there is no" \
+        "password to log in with. Please set the 'password' option, or turn" \
+        "'ingress_auto_login' back on to have Home Assistant sign you in."
+fi
+
+# PHP falls back to UTC whenever date.timezone is unset, no matter what the
+# rest of the container is set to, which would date every article in UTC.
+timezone="UTC"
+if bashio::var.has_value "${TZ:-}"; then
+    timezone="${TZ}"
+fi
+bashio::log.debug "Setting the PHP timezone to ${timezone}..."
+echo "date.timezone = ${timezone}" > /etc/php84/conf.d/99-timezone.ini
+
+# Creates the directories FreshRSS keeps its data in. Safe to run against an
+# existing installation, which is why it runs on every start rather than only
+# on the first: it repairs a data directory that lost something.
+mkdir -p "${DATA_DIR}/extensions"
+if ! php84 "${FRESHRSS_DIR}/cli/prepare.php" > /dev/null; then
+    bashio::exit.nok "Preparing the FreshRSS data directory failed!"
+fi
+
+if ! bashio::fs.file_exists "${DATA_DIR}/config.php"; then
+    bashio::log.info "Installing FreshRSS, this may take a while..."
+
+    # base_url is deliberately left unset. Home Assistant hands out a different
+    # Ingress path per session, so the address FreshRSS is reached at is not
+    # known here; it is worked out per request from the headers instead.
+    #
+    # The API is what mobile apps and other feed readers talk to. Turning it on
+    # opens nothing by itself: it stays shut until a user sets an API password
+    # of their own from within FreshRSS.
+    #
+    # Every value is attached with an "=". FreshRSS parses these with getopt(),
+    # which takes no separate argument for an option whose value is optional,
+    # and stops reading at the first thing that is not an option. Written as
+    # "--disable-update true", the "true" would end the list and everything
+    # after it would be dropped without a word of complaint.
+    if ! php84 "${FRESHRSS_DIR}/cli/do-install.php" \
+        --default-user="${username}" \
+        --auth-type="${auth_type}" \
+        --db-type=sqlite \
+        --environment=production \
+        --api-enabled=true \
+        --allow-robots=false \
+        --disable-update=true;
+    then
+        bashio::exit.nok "Installing FreshRSS failed!"
+    fi
+fi
+
+# FreshRSS keeps a user's configuration here, and treats its absence as the
+# user not existing.
+if ! bashio::fs.file_exists "${DATA_DIR}/users/${username}/config.php"; then
+    bashio::log.info "Creating the '${username}' account..."
+
+    # No password is handed over here, on purpose: FreshRSS' own script would
+    # take it as a command line argument, which leaves it in the process list.
+    # It is set below instead.
+    if ! php84 "${FRESHRSS_DIR}/cli/create-user.php" --user="${username}"; then
+        bashio::exit.nok "Creating the '${username}' account failed!"
+    fi
+fi
+
+if bashio::var.has_value "${password}"; then
+    # Applying this on every start would undo a password changed from within
+    # FreshRSS itself, so it is only applied when the configured value differs
+    # from the one applied last. Only a hash of it is stored.
+    password_hash=$(printf '%s' "${password}" | sha256sum | cut -d ' ' -f 1)
+    if [[ "$(cat "${PASSWORD_STAMP}" 2>/dev/null)" != "${password_hash}" ]]; then
+        bashio::log.info "Setting the password of the '${username}' account..."
+
+        if ! FRESHRSS_USER="${username}" FRESHRSS_PASSWORD="${password}" \
+            php84 /usr/share/freshrss/set-password.php;
+        then
+            bashio::exit.nok \
+                "Setting the password of the '${username}' account failed!"
+        fi
+
+        echo "${password_hash}" > "${PASSWORD_STAMP}"
+        chmod 600 "${PASSWORD_STAMP}"
+    fi
+fi
+
+if ! FRESHRSS_AUTH_TYPE="${auth_type}" FRESHRSS_USER="${username}" \
+    php84 /usr/share/freshrss/configure.php;
+then
+    bashio::exit.nok "Configuring FreshRSS failed!"
+fi
+
+if bashio::config.true 'ingress_auto_login'; then
+    bashio::log.info \
+        "Home Assistant signs you in as '${username}' over Ingress."
+    if bashio::var.has_value "$(bashio::app.port 80)"; then
+        bashio::log.notice
+        bashio::log.notice "The published port serves the API, but not the web"
+        bashio::log.notice "interface: FreshRSS has no login of its own to show"
+        bashio::log.notice "there while Home Assistant signs you in. Turn off"
+        bashio::log.notice "'ingress_auto_login' to use it from a browser."
+        bashio::log.notice
+    fi
+fi

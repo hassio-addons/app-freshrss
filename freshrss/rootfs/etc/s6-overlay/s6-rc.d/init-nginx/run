@@ -1,0 +1,27 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community App: FreshRSS
+# Configures nginx for use with FreshRSS
+# ==============================================================================
+
+# Generate Ingress configuration
+bashio::var.json \
+    auto_login "^$(bashio::config 'ingress_auto_login')" \
+    interface "$(bashio::app.ip_address)" \
+    username "$(bashio::config 'username' 'admin')" \
+    | tempio \
+        -template /etc/nginx/templates/ingress.gtpl \
+        -out /etc/nginx/servers/ingress.conf
+
+# Generate direct access configuration, if enabled.
+if bashio::var.has_value "$(bashio::app.port 80)"; then
+    bashio::config.require.ssl
+    bashio::var.json \
+        certfile "$(bashio::config 'certfile')" \
+        keyfile "$(bashio::config 'keyfile')" \
+        ssl "^$(bashio::config 'ssl')" \
+        | tempio \
+            -template /etc/nginx/templates/direct.gtpl \
+            -out /etc/nginx/servers/direct.conf
+fi

@@ -1,0 +1,34 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community App: FreshRSS
+# Periodically refreshes the feeds of every user
+# ==============================================================================
+declare interval
+
+interval=$(bashio::config 'refresh_interval' 30)
+
+if [[ "${interval}" -eq 0 ]]; then
+    bashio::log.info "Automatic refreshing of feeds is disabled"
+    # A longrun may not exit, so park this service for the lifetime of the
+    # container. s6-pause does that while still honouring signals.
+    exec /command/s6-pause
+fi
+
+bashio::log.info "Refreshing feeds every ${interval} minute(s)..."
+
+while true; do
+    # FreshRSS holds a lock of its own for the length of a run and reports it
+    # when it finds one, so a round of feeds that outlasts the interval cannot
+    # pile up behind itself.
+    #
+    # A refresh fails for reasons the next one recovers from on its own, an
+    # unreachable feed host most of all, so a failure must not take the app
+    # down with it.
+    if ! php84 /var/www/freshrss/app/actualize_script.php; then
+        bashio::log.warning \
+            "Refreshing feeds failed, retrying in ${interval} minute(s)."
+    fi
+
+    sleep "$((interval * 60))"
+done
