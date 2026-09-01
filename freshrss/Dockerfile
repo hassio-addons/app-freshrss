@@ -39,6 +39,21 @@ RUN \
     && tar zxf /tmp/freshrss.tar.gz -C \
         /var/www/freshrss --strip-components=1 \
     \
+    \
+    # Ingress renders the app in an iframe, which FreshRSS' Content-Security-
+    # Policy of frame-ancestors 'none' does not survive. Its `csp.frame-ancestors`
+    # setting only reaches the four controllers that declare a policy of their
+    # own; every other page, the settings among them, falls back to this default
+    # and would be refused by the browser. 'self' is the narrowest value that
+    # lets the frame render, since Ingress serves the app from below the root of
+    # the Home Assistant origin, and it still refuses framing from anywhere else
+    # on the published port. The grep is what makes an upstream change to this
+    # line fail the build rather than quietly ship a blank panel.
+    && grep -q "'frame-ancestors' => \"'none'\"," \
+        /var/www/freshrss/lib/Minz/ActionController.php \
+    && sed -i "s/'frame-ancestors' => \"'none'\",/'frame-ancestors' => \"'self'\",/" \
+        /var/www/freshrss/lib/Minz/ActionController.php \
+    \
     && find /var/www/ -type f -name "*.md" -depth -exec rm -f {} \; \
     && rm -f -r \
         /etc/nginx \
