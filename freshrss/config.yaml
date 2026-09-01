@@ -31,7 +31,7 @@ options:
   keyfile: privkey.pem
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
-  username: 'match(^([0-9a-zA-Z_][0-9a-zA-Z_.@-]{1,38}|[0-9a-zA-Z])$)'
+  username: "match(^([0-9a-zA-Z_][0-9a-zA-Z_.@-]{1,38}|[0-9a-zA-Z])$)"
   password: password?
   ingress_auto_login: bool
   refresh_interval: int(0,1440)
