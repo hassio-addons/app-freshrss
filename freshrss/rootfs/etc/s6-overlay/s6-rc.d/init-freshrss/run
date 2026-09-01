@@ -4,11 +4,14 @@
 # Home Assistant Community App: FreshRSS
 # Sets up FreshRSS before the server starts
 # ==============================================================================
+declare accounts
 declare auth_type
+declare auto_login
 declare password
 declare password_hash
 declare timezone
 declare username
+declare -a default_feeds
 
 readonly FRESHRSS_DIR="/var/www/freshrss"
 readonly DATA_DIR="/data/freshrss"
@@ -17,12 +20,14 @@ readonly PASSWORD_STAMP="${DATA_DIR}/.password"
 username=$(bashio::config 'username' 'admin')
 
 # Ingress runs behind Home Assistant, which has established who is asking long
-# before a request gets here, so FreshRSS is told to take that word for it.
-# Without it, FreshRSS asks for a login of its own.
+# before a request gets here, so FreshRSS is told to take that word for it, and
+# hands each Home Assistant user an account of their own. Without it, FreshRSS
+# asks for a login of its own and everybody shares the one account below.
+auto_login=false
+auth_type='form'
 if bashio::config.true 'ingress_auto_login'; then
+    auto_login=true
     auth_type='http_auth'
-else
-    auth_type='form'
 fi
 
 password=""
@@ -53,6 +58,13 @@ mkdir -p "${DATA_DIR}/extensions"
 if ! php84 "${FRESHRSS_DIR}/cli/prepare.php" > /dev/null; then
     bashio::exit.nok "Preparing the FreshRSS data directory failed!"
 fi
+
+# FreshRSS reads this while creating an account, to decide whether the account
+# is the first one and therefore the one that administers FreshRSS. It has to
+# be in place before any account can appear, which with Ingress signing people
+# in is as soon as the server starts.
+cp /usr/share/freshrss/config-user.custom.php \
+    "${DATA_DIR}/config-user.custom.php"
 
 if ! bashio::fs.file_exists "${DATA_DIR}/config.php"; then
     bashio::log.info "Installing FreshRSS, this may take a while..."
@@ -85,46 +97,73 @@ fi
 
 # FreshRSS keeps a user's configuration here, and treats its absence as the
 # user not existing.
+#
+# This account is always created, because FreshRSS' default_user has to name
+# one that exists: it writes below that path on ordinary requests and complains
+# on every one of them when it is not there. When Ingress signs people in,
+# nobody ever logs into this account, so it is left without the starter feeds
+# that a real one gets, and it does not count as the first arrival that is
+# handed the administrator role.
 if ! bashio::fs.file_exists "${DATA_DIR}/users/${username}/config.php"; then
     bashio::log.info "Creating the '${username}' account..."
+
+    default_feeds=()
+    if bashio::var.true "${auto_login}"; then
+        default_feeds=(--no-default-feeds)
+    fi
 
     # No password is handed over here, on purpose: FreshRSS' own script would
     # take it as a command line argument, which leaves it in the process list.
     # It is set below instead.
-    if ! php84 "${FRESHRSS_DIR}/cli/create-user.php" --user="${username}"; then
+    if ! php84 "${FRESHRSS_DIR}/cli/create-user.php" \
+        --user="${username}" "${default_feeds[@]}";
+    then
         bashio::exit.nok "Creating the '${username}' account failed!"
     fi
 fi
 
-if bashio::var.has_value "${password}"; then
-    # Applying this on every start would undo a password changed from within
-    # FreshRSS itself, so it is only applied when the configured value differs
-    # from the one applied last. Only a hash of it is stored.
-    password_hash=$(printf '%s' "${password}" | sha256sum | cut -d ' ' -f 1)
-    if [[ "$(cat "${PASSWORD_STAMP}" 2>/dev/null)" != "${password_hash}" ]]; then
-        bashio::log.info "Setting the password of the '${username}' account..."
+if bashio::var.false "${auto_login}"; then
+    if bashio::var.has_value "${password}"; then
+        # Applying this on every start would undo a password changed from
+        # within FreshRSS itself, so it is only applied when the configured
+        # value differs from the one applied last. Only a hash is stored.
+        password_hash=$(printf '%s' "${password}" | sha256sum | cut -d ' ' -f 1)
+        if [[ "$(cat "${PASSWORD_STAMP}" 2>/dev/null)" != "${password_hash}" ]]; then
+            bashio::log.info "Setting the password of the '${username}' account..."
 
-        if ! FRESHRSS_USER="${username}" FRESHRSS_PASSWORD="${password}" \
-            php84 /usr/share/freshrss/set-password.php;
-        then
-            bashio::exit.nok \
-                "Setting the password of the '${username}' account failed!"
+            if ! FRESHRSS_USER="${username}" FRESHRSS_PASSWORD="${password}" \
+                php84 /usr/share/freshrss/set-password.php;
+            then
+                bashio::exit.nok \
+                    "Setting the password of the '${username}' account failed!"
+            fi
+
+            echo "${password_hash}" > "${PASSWORD_STAMP}"
+            chmod 600 "${PASSWORD_STAMP}"
         fi
-
-        echo "${password_hash}" > "${PASSWORD_STAMP}"
-        chmod 600 "${PASSWORD_STAMP}"
     fi
 fi
 
-if ! FRESHRSS_AUTH_TYPE="${auth_type}" FRESHRSS_USER="${username}" \
+if ! FRESHRSS_AUTH_TYPE="${auth_type}" FRESHRSS_DEFAULT_USER="${username}" \
     php84 /usr/share/freshrss/configure.php;
 then
     bashio::exit.nok "Configuring FreshRSS failed!"
 fi
 
-if bashio::config.true 'ingress_auto_login'; then
+if bashio::var.true "${auto_login}"; then
     bashio::log.info \
-        "Home Assistant signs you in as '${username}' over Ingress."
+        "Home Assistant signs you in over Ingress, and every Home Assistant" \
+        "user gets a FreshRSS account of their own."
+
+    # Every account but the one this app set up for itself, which nobody signs
+    # in to while Ingress does the signing in.
+    accounts=$(find "${DATA_DIR}/users" -mindepth 2 -maxdepth 2 -name config.php \
+        -not -path "*/_/*" -not -path "*/${username}/*" -print -quit 2>/dev/null)
+    if bashio::var.is_empty "${accounts}"; then
+        bashio::log.info \
+            "The first of them to open the app administers FreshRSS."
+    fi
+
     if bashio::var.has_value "$(bashio::app.port 80)"; then
         bashio::log.notice
         bashio::log.notice "The published port serves the API, but not the web"

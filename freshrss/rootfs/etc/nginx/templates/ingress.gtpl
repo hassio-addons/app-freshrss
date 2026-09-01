@@ -17,12 +17,15 @@ server {
 
         {{ if .auto_login }}
         # Home Assistant has already established who is asking by the time a
-        # request reaches Ingress, so FreshRSS is told to accept that. Unlike
-        # the header variants of this, REMOTE_USER cannot be reached by a
-        # client: NGINX prefixes every incoming header with HTTP_, so nothing
+        # request reaches Ingress, so FreshRSS is told to accept that, and each
+        # person gets an account of their own. The name is worked out from the
+        # Home Assistant user by the maps in nginx.conf.
+        #
+        # Unlike the header variants of this, REMOTE_USER cannot be reached by
+        # a client: NGINX prefixes every incoming header with HTTP_, so nothing
         # a browser sends can land here. That is also why this needs no entry
         # in FreshRSS' trusted_sources.
-        fastcgi_param REMOTE_USER "{{ .username }}";
+        fastcgi_param REMOTE_USER $freshrss_ingress_user;
         {{ end }}
     }
 }

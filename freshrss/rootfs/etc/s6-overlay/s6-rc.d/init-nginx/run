@@ -9,7 +9,6 @@
 bashio::var.json \
     auto_login "^$(bashio::config 'ingress_auto_login')" \
     interface "$(bashio::app.ip_address)" \
-    username "$(bashio::config 'username' 'admin')" \
     | tempio \
         -template /etc/nginx/templates/ingress.gtpl \
         -out /etc/nginx/servers/ingress.conf
