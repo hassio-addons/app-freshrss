@@ -6,7 +6,7 @@ FROM ${BUILD_FROM}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Setup base
-ARG FRESHRSS_VERSION="1.30.2"
+ARG FRESHRSS_VERSION="1.30.4"
 RUN \
     apk add --no-cache \
         nginx=1.30.6-r0 \
