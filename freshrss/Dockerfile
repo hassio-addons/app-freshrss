@@ -9,7 +9,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG FRESHRSS_VERSION="1.30.4"
 RUN \
     apk add --no-cache \
-        nginx=1.30.6-r0 \
+        nginx=1.30.7-r0 \
         php84-ctype=8.4.27-r0 \
         php84-curl=8.4.27-r0 \
         php84-dom=8.4.27-r0 \
